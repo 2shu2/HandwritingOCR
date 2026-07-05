@@ -1,0 +1,25 @@
+data:
+  train_image_dir: "data/iam/images"
+  train_label_file: "data/iam/train_labels.txt"
+  val_image_dir: "data/iam/images"
+  val_label_file: "data/iam/val_labels.txt"
+  alphabet: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,!?;:-\"'/() "
+  img_height: 64
+
+model:
+  backbone: "custom_cnn"
+  hidden_size: 256
+  num_layers: 2
+
+train:
+  batch_size: 8
+  epochs: 30
+  learning_rate: 0.001
+  mixed_precision: false
+  num_workers: 0
+  save_dir: "./checkpoints"
+  log_interval: 10
+
+inference:
+  model_path: "./checkpoints/best_model.pth"
+  img_height: 64
