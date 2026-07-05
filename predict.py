@@ -58,7 +58,7 @@ def run_inference(model, image_path: str, img_height: int, idx2char: dict):
     probs = torch.exp(log_probs)
     max_probs, _ = probs.max(dim=-1)
     confidence = max_probs.mean().item()
-    pred_texts = decode_predictions(log_probs, idx2char)
+    pred_texts = decode_predictions(log_probs, idx2char, use_beam=True, beam_width=5)
     print(f"  识别结果: {pred_texts[0]}")
     print(f"  置信度: {confidence:.2%}")
     return pred_texts[0], confidence

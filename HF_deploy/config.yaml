@@ -7,14 +7,17 @@ data:
   img_height: 64
 
 model:
-  backbone: "custom_cnn"
+  backbone: "resnet34"
   hidden_size: 256
   num_layers: 2
 
 train:
   batch_size: 8
-  epochs: 30
+  epochs: 50
   learning_rate: 0.001
+  lr_scheduler:
+    factor: 0.5
+    patience: 5
   mixed_precision: false
   num_workers: 0
   save_dir: "./checkpoints"

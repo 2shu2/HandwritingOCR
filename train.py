@@ -187,6 +187,13 @@ def train(config: dict):
     optimizer = torch.optim.Adam(model.parameters(), lr=config['train']['learning_rate'])
     scaler = GradScaler(enabled=config['train']['mixed_precision'])
 
+    # 学习率调度：验证准确率停滞时自动降低学习率
+    lr_config = config['train'].get('lr_scheduler', {})
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='max', factor=lr_config.get('factor', 0.5),
+        patience=lr_config.get('patience', 5), verbose=True
+    )
+
     # ---------- 训练循环 ----------
     best_acc = 0.0
     for epoch in range(config['train']['epochs']):
@@ -245,6 +252,9 @@ def train(config: dict):
 
         char_accuracy = correct / total_chars if total_chars > 0 else 0.0
         print(f"Epoch [{epoch+1}] Validation Char Accuracy: {char_accuracy:.4f}")
+
+        # 学习率调度
+        scheduler.step(char_accuracy)
 
         # 保存最佳模型
         if char_accuracy > best_acc:

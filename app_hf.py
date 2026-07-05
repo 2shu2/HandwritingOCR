@@ -68,7 +68,7 @@ def recognize(image):
     confidence = max_probs.mean().item()
 
     # 解码
-    pred_texts = decode_predictions(log_probs, idx2char)
+    pred_texts = decode_predictions(log_probs, idx2char, use_beam=True, beam_width=5)
     text = pred_texts[0]
 
     # OCR 常见后处理修正

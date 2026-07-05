@@ -2,8 +2,10 @@
 数据加载、预处理、batch整理与解码工具
 支持变长宽度文本行图片，通过collate_fn实现mini-batch动态padding
 """
+import math
 import torch
 from torch.utils.data import Dataset
+from torchvision import transforms
 import cv2
 import numpy as np
 from typing import List, Tuple
@@ -26,6 +28,20 @@ class TextLineDataset(Dataset):
         self.char2idx['<blank>'] = 0
         self.idx2char = {i + 1: ch for i, ch in enumerate(alphabet)}
         self.idx2char[0] = ''  # blank对应空字符串
+
+        # 训练数据增强（torchvision transforms）
+        if self.is_train:
+            self.augmentation = transforms.Compose([
+                transforms.ToPILImage(),
+                transforms.Grayscale(num_output_channels=3),   # L→RGB 兼容后续操作
+                transforms.RandomAdjustSharpness(2, p=0.3),    # 锐化
+                transforms.ColorJitter(brightness=0.3, contrast=0.3),  # 亮度/对比度
+                transforms.RandomAffine(degrees=3, shear=5),    # 微旋转/倾斜
+                transforms.ToTensor(),
+                transforms.Lambda(lambda x: x.mean(0, keepdim=True)),  # RGB→灰度
+            ])
+        else:
+            self.augmentation = None
 
     def _load_labels(self, label_file: str) -> List[Tuple[str, str]]:
         """读取标注文件（每行：图片名\t文本）"""
@@ -73,21 +89,15 @@ class TextLineDataset(Dataset):
         new_w = max(int(w * scale), 1)  # 宽度至少为1
         img = cv2.resize(img, (new_w, self.img_height))
 
-        # 数据增强（仅训练时）
-        if self.is_train:
-            # 随机亮度和对比度
-            if np.random.rand() < 0.3:
-                img = cv2.convertScaleAbs(img, alpha=1.2, beta=10)
-            # 随机小角度旋转
-            if np.random.rand() < 0.3:
-                center = (new_w / 2, self.img_height / 2)
-                angle = np.random.uniform(-3, 3)
-                M = cv2.getRotationMatrix2D(center, angle, 1)
-                img = cv2.warpAffine(img, M, (new_w, self.img_height))
+        # 归一化
+        img_norm = img.astype(np.float32) / 255.0
 
-        # 归一化，增加channel维度 (1, H, W)
-        img = img.astype(np.float32) / 255.0
-        img_tensor = torch.from_numpy(img).unsqueeze(0)
+        # 数据增强（仅训练时）
+        if self.augmentation is not None:
+            img_tensor = self.augmentation(img)  # (1, H, W)
+        else:
+            img_tensor = torch.from_numpy(img_norm).unsqueeze(0)
+
         label_tensor = self.encode_text(text)
         return img_tensor, label_tensor
 
@@ -110,22 +120,106 @@ def collate_fn(batch: List[Tuple[torch.Tensor, torch.Tensor]]) -> Tuple[torch.Te
     return imgs, labels  # labels是Tensor列表，不等长
 
 
-def decode_predictions(log_probs: torch.Tensor, idx2char: dict, blank: int = 0) -> List[str]:
+def log_sum_exp(a: float, b: float) -> float:
+    """数值稳定的 log-sum-exp"""
+    if a == float('-inf'):
+        return b
+    if b == float('-inf'):
+        return a
+    if a > b:
+        return a + math.log(1 + math.exp(b - a))
+    else:
+        return b + math.log(1 + math.exp(a - b))
+
+
+def ctc_beam_search(log_probs: torch.Tensor, beam_width: int = 5,
+                    blank: int = 0) -> List[int]:
     """
-    CTC贪婪解码：取每步最大概率的字符，去重去blank，返回字符串列表
+    CTC 前缀束搜索（单条序列）
+    log_probs: (T, C) 对数概率
+    返回最佳 token 序列
+    """
+    T, C = log_probs.shape
+
+    # 每个 beam: (prefix_tuple, prob_blank, prob_non_blank)
+    # prob_blank: 前缀以 blank 结尾的概率（对数空间）
+    # prob_non_blank: 前缀以非 blank 结尾的概率（对数空间）
+    NEG_INF = float('-inf')
+    beams = {(): [0.0, NEG_INF]}  # {prefix: [pb, pnb]}
+
+    for t in range(T):
+        new_beams = {}
+
+        for prefix, (pb, pnb) in beams.items():
+            for c in range(C):
+                p_c = log_probs[t, c].item()
+
+                if c == blank:
+                    # 添加 blank：前缀不变
+                    old_pb, old_pnb = new_beams.get(prefix, [NEG_INF, NEG_INF])
+                    new_beams[prefix] = [
+                        log_sum_exp(old_pb, log_sum_exp(pb + p_c, pnb + p_c)),
+                        old_pnb
+                    ]
+                else:
+                    last_char = prefix[-1] if len(prefix) > 0 else None
+
+                    if c == last_char:
+                        # 重复字符：可能不扩展（当前字符是之前路径的重叠）
+                        old_pb, old_pnb = new_beams.get(prefix, [NEG_INF, NEG_INF])
+                        # pnb + p_c: 前一步非 blank，当前字符合并到前一个
+                        new_beams[prefix] = [
+                            old_pb,
+                            log_sum_exp(old_pnb, pnb + p_c)
+                        ]
+
+                    # 扩展新字符
+                    new_key = prefix + (c,)
+                    old_pb, old_pnb = new_beams.get(new_key, [NEG_INF, NEG_INF])
+                    # pb + p_c: 前一步是 blank，当前字符是新的
+                    # pnb + p_c: 前一步非 blank（且不是重复），当前字符是新的
+                    new_beams[new_key] = [
+                        old_pb,
+                        log_sum_exp(old_pnb, log_sum_exp(pb + p_c, pnb + p_c))
+                    ]
+
+        # 保留概率最高的 beam_width 个前缀
+        scored = [(k, log_sum_exp(v[0], v[1])) for k, v in new_beams.items()]
+        scored.sort(key=lambda x: x[1], reverse=True)
+        beams = {k: new_beams[k] for k, _ in scored[:beam_width]}
+
+    # 返回最优路径
+    best = max(beams.items(), key=lambda x: log_sum_exp(x[1][0], x[1][1]))
+    return list(best[0])
+
+
+def decode_predictions(log_probs: torch.Tensor, idx2char: dict,
+                       blank: int = 0, use_beam: bool = False,
+                       beam_width: int = 5) -> List[str]:
+    """
+    CTC 解码：支持贪心解码和束搜索解码
     log_probs: (B, T, C) 对数概率
     idx2char: 数字到字符的映射字典
     """
-    preds = log_probs.argmax(dim=-1)  # (B, T)
     decoded_texts = []
-    for b in range(preds.size(0)):
-        prev = blank
-        seq = []
-        for t in preds[b]:
-            token = t.item()
-            if token != blank and token != prev:
-                seq.append(token)
-            prev = token
-        text = ''.join([idx2char.get(token, '') for token in seq])
+
+    for b in range(log_probs.size(0)):
+        single_probs = log_probs[b]  # (T, C)
+
+        if use_beam:
+            tokens = ctc_beam_search(single_probs, beam_width, blank)
+        else:
+            # 贪心解码
+            preds = single_probs.argmax(dim=-1)
+            prev = blank
+            tokens = []
+            for t in preds:
+                token = t.item()
+                if token != blank and token != prev:
+                    tokens.append(token)
+                prev = token
+
+        text = ''.join([idx2char.get(token, '') for token in tokens])
         decoded_texts.append(text)
+
     return decoded_texts
