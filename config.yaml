@@ -1,23 +1,25 @@
 data:
-  train_image_dir: "data/iam/images"
-  train_label_file: "data/iam/train_labels.txt"
-  val_image_dir: "data/iam/images"
-  val_label_file: "data/iam/val_labels.txt"
+  train_image_dir: "data/all_dataset/images"
+  train_label_file: "data/all_dataset/train_labels.txt"
+  val_image_dir: "data/all_dataset/images"
+  val_label_file: "data/all_dataset/val_labels.txt"
   alphabet: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,!?;:-\"'/() "
   img_height: 64
 
 model:
   backbone: "resnet34"
-  hidden_size: 256
-  num_layers: 2
+  hidden_size: 512   # 256→512: 增大LSTM隐藏层提升序列建模能力
+  num_layers: 3      # 2→3: 增加LSTM层数获得更深序列特征
 
 train:
-  batch_size: 8
+  batch_size: 16       # 8→16: 增大batch稳定CTC梯度
   epochs: 50
-  learning_rate: 0.001
+  learning_rate: 0.0005  # 0.001→0.0005: 使用预训练模型，降低lr防止破坏预训练特征
+  weight_decay: 0.0001   # AdamW权重衰减，防止过拟合
   lr_scheduler:
-    factor: 0.5
-    patience: 5
+    T_0: 10            # 余弦退火初始周期（epoch）
+    T_mult: 2           # 每个周期长度翻倍
+    eta_min: 0.000001   # 最小学习率
   mixed_precision: false
   num_workers: 0
   save_dir: "./checkpoints"

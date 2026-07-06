@@ -19,9 +19,15 @@ class CRNN(nn.Module):
 
         if backbone == 'resnet34':
             # 使用ResNet34作为特征提取器，去掉全连接和最后池化，保留足够的空间分辨率
-            resnet = models.resnet34(weights=None)  # 不加载预训练权重，适合灰度图微调
+            # 加载 ImageNet 预训练权重，大幅提升收敛速度和最终精度
+            resnet = models.resnet34(weights=models.ResNet34_Weights.IMAGENET1K_V1)
+            # 将预训练的RGB 3通道Conv2d转换为灰度1通道（对3通道权重取平均）
+            old_weight = resnet.conv1.weight.data  # (64, 3, 7, 7)
+            gray_weight = old_weight.mean(dim=1, keepdim=True)  # (64, 1, 7, 7)
+            gray_conv = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+            gray_conv.weight.data = gray_weight
             self.cnn = nn.Sequential(
-                nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False),
+                gray_conv,
                 resnet.bn1,
                 resnet.relu,
                 resnet.maxpool,  # /2

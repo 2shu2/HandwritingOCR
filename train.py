@@ -2,6 +2,13 @@
 模型训练主程序
 支持混合精度、checkpoint保存、验证集评估
 自动从 data/trdg/labels.txt 按比例拆分训练集/验证集
+
+改进点：
+- 验证指标：从逐位对齐比较改为CER（Character Error Rate / 编辑距离）
+- 验证解码：启用CTC Beam Search，与推理时一致
+- 优化器：AdamW + 权重衰减，防止过拟合
+- 学习率调度：CosineAnnealingWarmRestarts，周期性重启避免陷入局部最优
+- 梯度裁剪：防止CTC损失偶尔产生的梯度爆炸
 """
 import os
 import random
@@ -10,9 +17,28 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.cuda.amp import GradScaler, autocast
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 
 from data import TextLineDataset, collate_fn, decode_predictions
 from model import CRNN
+
+
+def levenshtein_distance(s1: str, s2: str) -> int:
+    """计算两个字符串的编辑距离（Levenshtein Distance），O(n*m)"""
+    if len(s1) < len(s2):
+        return levenshtein_distance(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+    prev = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        curr = [i + 1]
+        for j, c2 in enumerate(s2):
+            insert = prev[j + 1] + 1
+            delete = curr[j] + 1
+            sub = prev[j] + (0 if c1 == c2 else 1)
+            curr.append(min(insert, delete, sub))
+        prev = curr
+    return prev[-1]
 
 
 def split_train_val(label_file: str, train_file: str, val_file: str,
@@ -184,14 +210,24 @@ def train(config: dict):
     ).to(device)
 
     ctc_loss = nn.CTCLoss(blank=0, zero_infinity=True)  # blank索引为0
-    optimizer = torch.optim.Adam(model.parameters(), lr=config['train']['learning_rate'])
+
+    # AdamW: 带解耦权重衰减的Adam，比Adam更不容易过拟合
+    wd = config['train'].get('weight_decay', 1e-4)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=config['train']['learning_rate'],
+        weight_decay=wd
+    )
     scaler = GradScaler(enabled=config['train']['mixed_precision'])
 
-    # 学习率调度：验证准确率停滞时自动降低学习率
+    # CosineAnnealingWarmRestarts: 余弦退火 + 周期性重启
+    # T_0=10 表示第一个周期10个epoch，每个周期结束后学习率重置并继续
+    # T_mult=2 表示每个周期长度翻倍（第2周期20 epoch，第3周期40 epoch...）
     lr_config = config['train'].get('lr_scheduler', {})
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='max', factor=lr_config.get('factor', 0.5),
-        patience=lr_config.get('patience', 5), verbose=True
+    scheduler = CosineAnnealingWarmRestarts(
+        optimizer,
+        T_0=lr_config.get('T_0', 10),
+        T_mult=lr_config.get('T_mult', 2),
+        eta_min=lr_config.get('eta_min', 1e-6)
     )
 
     # ---------- 训练循环 ----------
@@ -220,8 +256,11 @@ def train(config: dict):
                     target_lengths
                 )
 
-            # 反向传播，支持混合精度
+            # 反向传播，支持混合精度 + 梯度裁剪
             scaler.scale(loss).backward()
+            # 梯度裁剪：防止CTC损失偶尔产生的梯度爆炸
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
             scaler.step(optimizer)
             scaler.update()
 
@@ -231,30 +270,36 @@ def train(config: dict):
                       f"Batch [{batch_idx}] Loss: {loss.item():.4f}")
 
         avg_loss = total_loss / len(train_loader)
-        print(f"Epoch [{epoch+1}] Average Loss: {avg_loss:.4f}")
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"Epoch [{epoch+1}] Average Loss: {avg_loss:.4f}  LR: {current_lr:.6f}")
 
         # ---------- 验证 ----------
         model.eval()
-        correct = 0
-        total_chars = 0
+        total_cer = 0.0   # Character Error Rate（编辑距离 / 真实字符数）
+        total_samples = 0
         with torch.no_grad():
             for imgs, labels in val_loader:
                 imgs = imgs.to(device)
                 log_probs = model(imgs)
-                pred_texts = decode_predictions(log_probs, val_dataset.idx2char)
+                # 验证时使用Beam Search解码，与推理时保持一致
+                pred_texts = decode_predictions(
+                    log_probs, val_dataset.idx2char, use_beam=True, beam_width=5
+                )
                 for i, pred_str in enumerate(pred_texts):
                     true_str = ''.join([val_dataset.idx2char.get(idx.item(), '')
                                         for idx in labels[i] if idx.item() != 0])
-                    # 逐字符比较
-                    min_len = min(len(pred_str), len(true_str))
-                    correct += sum(p == t for p, t in zip(pred_str[:min_len], true_str[:min_len]))
-                    total_chars += len(true_str)
+                    # 使用编辑距离（CER）计算错误率
+                    dist = levenshtein_distance(pred_str, true_str)
+                    total_cer += dist / max(len(true_str), 1)
+                    total_samples += 1
 
-        char_accuracy = correct / total_chars if total_chars > 0 else 0.0
-        print(f"Epoch [{epoch+1}] Validation Char Accuracy: {char_accuracy:.4f}")
+        avg_cer = total_cer / total_samples if total_samples > 0 else 1.0
+        char_accuracy = 1.0 - avg_cer  # 将CER转换为准确率
+        print(f"Epoch [{epoch+1}] Validation CER: {avg_cer:.4f}  "
+              f"Char Accuracy: {char_accuracy:.4f}")
 
-        # 学习率调度
-        scheduler.step(char_accuracy)
+        # 学习率调度（余弦退火按epoch调用，不需要传入metrics）
+        scheduler.step(epoch)
 
         # 保存最佳模型
         if char_accuracy > best_acc:
