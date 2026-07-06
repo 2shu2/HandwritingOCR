@@ -4,10 +4,6 @@
 
 > 🚀 **[在线体验](https://www.modelscope.cn/studios/nihao523/HandwritingOCR)** — ModelScope 一键部署，上传图片即识别
 
-## 演示
-
-<video src="./demo.mp4" controls width="100%"></video>
-
 ## 特性
 
 - **模型架构**: Custom CNN (7层) + 2层 BiLSTM (hidden=256) + CTC Loss
