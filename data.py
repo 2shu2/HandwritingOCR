@@ -28,12 +28,13 @@ class ElasticDistortion:
         img_np = np.array(img, dtype=np.float32)
         h, w = img_np.shape[:2]
         # 生成随机位移场
-        dx = np.random.randn(h, w) * self.sigma
-        dy = np.random.randn(h, w) * self.sigma
-        # 高斯平滑
-        from scipy.ndimage import gaussian_filter
-        dx = gaussian_filter(dx, self.sigma) * self.alpha
-        dy = gaussian_filter(dy, self.sigma) * self.alpha
+        dx = np.random.randn(h, w).astype(np.float32) * self.sigma
+        dy = np.random.randn(h, w).astype(np.float32) * self.sigma
+        # 高斯平滑（用 cv2.GaussianBlur 代替 scipy，无需额外依赖）
+        ksize = int(4 * self.sigma + 1) | 1  # 确保为奇数
+        ksize = max(3, min(ksize, 31))       # 限制在 3~31 之间
+        dx = cv2.GaussianBlur(dx, (ksize, ksize), self.sigma) * self.alpha
+        dy = cv2.GaussianBlur(dy, (ksize, ksize), self.sigma) * self.alpha
         # 坐标映射
         x, y = np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
         indices = (y + dy).astype(np.float32), (x + dx).astype(np.float32)
@@ -79,7 +80,7 @@ class TextLineDataset(Dataset):
                 transforms.ToTensor(),
                 transforms.RandomErasing(p=0.1, scale=(0.02, 0.1),  # 随机擦除（新增）
                                         ratio=(0.3, 3.3)),
-                transforms.Lambda(lambda x: x.mean(0, keepdim=True)),  # RGB→灰度
+                # 不转灰度，保持3通道伪RGB（ResNet34预训练权重需要3通道输入）
             ])
         else:
             self.augmentation = None
@@ -135,9 +136,10 @@ class TextLineDataset(Dataset):
 
         # 数据增强（仅训练时）
         if self.augmentation is not None:
-            img_tensor = self.augmentation(img)  # (1, H, W)
+            img_tensor = self.augmentation(img)  # (3, H, W) 伪RGB
         else:
-            img_tensor = torch.from_numpy(img_norm).unsqueeze(0)
+            # 灰度图复制为3通道伪RGB（适配ResNet34预训练权重）
+            img_tensor = torch.from_numpy(img_norm).unsqueeze(0).repeat(3, 1, 1)
 
         label_tensor = self.encode_text(text)
         return img_tensor, label_tensor

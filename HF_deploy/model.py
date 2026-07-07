@@ -18,10 +18,11 @@ class CRNN(nn.Module):
         super().__init__()
 
         if backbone == 'resnet34':
-            # 使用ResNet34作为特征提取器，去掉全连接和最后池化，保留足够的空间分辨率
-            resnet = models.resnet34(weights=None)  # 不加载预训练权重，适合灰度图微调
+            # 使用ResNet34，保留原始3通道结构和ImageNet预训练权重
+            # 输入是3通道伪RGB（灰度图复制3份），不破坏预训练特征
+            resnet = models.resnet34(weights=models.ResNet34_Weights.IMAGENET1K_V1)
             self.cnn = nn.Sequential(
-                nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False),
+                resnet.conv1,   # 3→64, stride 2
                 resnet.bn1,
                 resnet.relu,
                 resnet.maxpool,  # /2
@@ -50,7 +51,7 @@ class CRNN(nn.Module):
 
         # 用 dummy 输入计算 CNN 输出高度，确保 LSTM 输入维度正确
         with torch.no_grad():
-            dummy = torch.zeros(1, 1, img_height, 128)  # 任意宽度
+            dummy = torch.zeros(1, 3, img_height, 128)  # 3通道输入
             cnn_out = self.cnn(dummy)
             cnn_out_height = cnn_out.shape[2]  # H' 维度
 
@@ -61,7 +62,7 @@ class CRNN(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        x: (B, 1, H, W) 灰度图
+        x: (B, 3, H, W) 伪RGB图（灰度复制3通道）
         返回: (B, T, num_classes) 对数softmax概率
         """
         # CNN特征提取

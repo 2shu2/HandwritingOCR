@@ -281,9 +281,9 @@ def train(config: dict):
             for imgs, labels in val_loader:
                 imgs = imgs.to(device)
                 log_probs = model(imgs)
-                # 验证时使用Beam Search解码，与推理时保持一致
+                # 验证时使用贪心解码（速度快），推理时用Beam Search
                 pred_texts = decode_predictions(
-                    log_probs, val_dataset.idx2char, use_beam=True, beam_width=5
+                    log_probs, val_dataset.idx2char, use_beam=False
                 )
                 for i, pred_str in enumerate(pred_texts):
                     true_str = ''.join([val_dataset.idx2char.get(idx.item(), '')

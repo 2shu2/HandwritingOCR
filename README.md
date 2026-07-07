@@ -1,32 +1,38 @@
 # HandwritingOCR — 手写英文识别
 
-基于 **CRNN (CNN + BiLSTM + CTC)** 的端到端手写英文文字行识别系统。使用 **IAM 真实手写数据集** 训练，支持本地推理、Web API、在线 Demo。
+基于 **CRNN (ResNet34 + 3层BiLSTM + CTC)** 的端到端手写英文文字行识别系统。使用 **IAM 真实手写数据集** 训练，支持本地推理、Web API、在线 Demo。
+
+>  **验证准确率: 89.9%**（CER 评估，Beam Search 解码约 91%）
 
 > 🚀 **[在线体验](https://www.modelscope.cn/studios/nihao523/HandwritingOCR)** — ModelScope 一键部署，上传图片即识别
 
 ## 特性
 
-- **模型架构**: Custom CNN (7层) + 2层 BiLSTM (hidden=256) + CTC Loss
-- **真实数据**: IAM Handwriting Database，6,482 张训练 + 976 张验证
-- **轻量高效**: 仅 8.5M 参数，33MB 模型文件
-- **多种部署**: 本地脚本 / FastAPI 服务 / Gradio Web UI
+- **模型架构**: ResNet34 (ImageNet 预训练) + 3层 BiLSTM (hidden=512) + CTC Loss
+- **真实数据**: IAM Handwriting Database，7,154 张训练 + 1,789 张验证
+- **预训练权重**: 灰度图复制为3通道伪RGB，完整保留 ImageNet 预训练特征
+- **数据增强**: 弹性变形 + 透视变换 + 高斯模糊 + 随机擦除 + 颜色抖动 + 仿射变换
+- **验证指标**: CER（字符错误率，基于编辑距离），非简单逐位比较
+- **多种解码**: 贪心解码（快） / Beam Search 5-beam（准）
+- **多种部署**: 本地脚本 / Gradio Web UI / 在线 Demo
 - **配置驱动**: YAML 统一管理所有参数
 
 ## 项目结构
 
 ```
 ├── config.yaml           # 主配置文件
-├── model.py              # CRNN 模型定义
-├── data.py               # 数据集、collate、CTC解码
+├── model.py              # CRNN 模型定义 (ResNet34 + BiLSTM)
+├── data.py               # 数据集、collate、CTC解码、数据增强
 ├── train.py              # 训练脚本（含自动数据生成）
 ├── predict.py            # 本地交互式推理
+├── eval_test.py          # 验证集完整评估
 ├── download_iam.py       # 下载 IAM 数据集
 ├── generate_data.py      # 合成数据生成（trdg）
+├── generate_large_data.py # 大规模数据生成（5万+）
 ├── split_data.py         # 训练/验证集分割
 ├── app.py                # FastAPI 服务
 ├── app_hf.py             # Gradio Web UI（HuggingFace / ModelScope）
 ├── requirements.txt      # 训练/推理依赖
-├── requirements_hf.txt   # 在线部署依赖（精简）
 ├── HF_deploy/            # 在线部署包
 │   ├── app.py
 │   ├── model.py
@@ -44,7 +50,7 @@
 ### 1. 环境安装
 
 ```bash
-git clone https://github.com/nihao523/HandwritingOCR.git
+git clone https://github.com/2shu2/HandwritingOCR.git
 cd HandwritingOCR
 pip install -r requirements.txt
 ```
@@ -55,11 +61,11 @@ pip install -r requirements.txt
 # 下载 IAM 手写数据集
 python download_iam.py
 
-# 开始训练
+# 开始训练（50 epochs，GPU约2小时）
 python train.py
 ```
 
-训练过程会输出每个 epoch 的 loss 和验证准确率，最优模型保存在 `checkpoints/best_model.pth`。
+训练过程输出每个 epoch 的 loss 和验证 CER，最优模型保存在 `checkpoints/best_model.pth`。
 
 ### 3. 本地测试
 
@@ -74,37 +80,52 @@ python predict.py
 ### 4. 启动 Web 服务
 
 ```bash
-# FastAPI 服务
-uvicorn app:app --host 0.0.0.0 --port 8000
-
 # Gradio Web UI
 python app_hf.py
+
+# FastAPI 服务
+uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
 ## 技术原理
 
 ```
-输入图片 → 灰度化 → 缩放(64px高度) → CRNN Model → CTC贪心解码 → 输出文字
+输入图片 → 灰度化 → 缩放(128px高度) → 灰度复制3通道(伪RGB)
+         → ResNet34 (ImageNet预训练) → 3层BiLSTM → CTC Beam Search → 输出文字
 ```
 
 | 组件 | 说明 |
 |------|------|
-| CNN Backbone | 7层自定义卷积网络，逐层下采样提取特征 |
-| BiLSTM | 2层双向 LSTM (hidden_size=256)，捕捉序列上下文 |
+| CNN Backbone | ResNet34 (ImageNet 预训练)，保留3通道结构 |
+| BiLSTM | 3层双向 LSTM (hidden_size=512)，捕捉序列上下文 |
 | CTC Loss | 免对齐训练，无需字符位置标注 |
-| 解码 | CTC 贪心解码 + 后处理修正 |
+| 数据增强 | 弹性变形 + 透视 + 模糊 + 擦除 + 颜色 + 仿射 |
+| 解码 | CTC 贪心解码（验证）/ Beam Search 5-beam（推理） |
 
 ## 模型指标
 
 | 指标 | 数值 |
 |------|------|
-| Backbone | Custom CNN (7层) |
-| RNN | 2层 BiLSTM (hidden=256) |
-| 参数量 | 8.5M |
-| 训练轮数 | 30 epochs |
-| Batch Size | 8 |
-| 验证准确率 | **68.2%** |
+| Backbone | ResNet34 (ImageNet pretrained) |
+| RNN | 3层 BiLSTM (hidden=512) |
+| 参数量 | ~46M |
+| 训练轮数 | 50 epochs |
+| Batch Size | 16 |
+| 输入高度 | 128px (3通道伪RGB) |
+| 混合精度 | FP16 (AMP) |
+| 验证准确率 | **89.9%** (贪心解码) |
+| Beam Search | **~91%** (5-beam) |
 | 数据集 | IAM Handwriting Database |
+
+## 准确率提升历程
+
+| 版本 | 准确率 | 关键改进 |
+|------|--------|----------|
+| v1.0 | 68.2% | Custom CNN + 2层LSTM (hidden=256) |
+| v2.0 | 25.0% | ResNet34灰度量平均（预训练权重被破坏） |
+| v3.0 | **89.9%** | 3通道伪RGB + img_height=128 + 强数据增强 |
+
+**核心教训**: ImageNet 预训练的3通道权重不能简单取平均转灰度，应该保留3通道结构，将灰度图复制3份作为输入。
 
 ## 在线 Demo
 
@@ -114,15 +135,17 @@ python app_hf.py
 
 ## 自定义指南
 
-- **更换字符集**: 修改 `config.yaml` 中的 `alphabet` 字段
-- **调整模型**: 切换 `backbone`（`custom_cnn` / `resnet34`）
-- **提升准确率**: 增加训练数据、添加语言模型后处理、调大 hidden_size
+- **更换字符集**: 修改 `config.yaml` 中的 `alphabet` 字段（支持中文需同步修改编码）
+- **调整模型**: 切换 `backbone`（`resnet34` / `custom_cnn`）
+- **提升准确率**: 增加训练数据（运行 `generate_large_data.py`）、添加语言模型后处理
+- **推理加速**: 使用贪心解码（速度快）vs Beam Search（精度高）
 
 ## 常见问题
 
-- **CUDA 显存不足**: 减小 `batch_size`（默认 8）
+- **CUDA 显存不足**: 减小 `batch_size`（默认 16），或降低 `img_height: 64`
 - **识别结果为空**: 确认图片为白底黑字，如需反转可在预处理中加入
-- **字符准确率低**: 当前模型在 IAM 数据集上准确率 68.2%，手写识别本身难度较高
+- **本地测试准确率低**: 确认使用 `checkpoints/best_model.pth`（170MB），非旧版（33MB）
+- **训练时间**: GPU (RTX 4060) 约 2 小时，CPU 约 5-7 小时
 
 ## 许可证
 

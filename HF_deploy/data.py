@@ -11,6 +11,41 @@ import numpy as np
 from typing import List, Tuple
 
 
+class ElasticDistortion:
+    """
+    弹性变形增强：模拟手写文字在纸张上的自然变形
+    使用高斯滤波平滑的随机位移场对图片进行变形
+    """
+    def __init__(self, alpha: float = 12.0, sigma: float = 2.5, p: float = 0.4):
+        self.alpha = alpha
+        self.sigma = sigma
+        self.p = p
+
+    def __call__(self, img):
+        if torch.rand(1).item() > self.p:
+            return img
+        # img: PIL Image, 转numpy
+        img_np = np.array(img, dtype=np.float32)
+        h, w = img_np.shape[:2]
+        # 生成随机位移场
+        dx = np.random.randn(h, w).astype(np.float32) * self.sigma
+        dy = np.random.randn(h, w).astype(np.float32) * self.sigma
+        # 高斯平滑（用 cv2.GaussianBlur 代替 scipy，无需额外依赖）
+        ksize = int(4 * self.sigma + 1) | 1  # 确保为奇数
+        ksize = max(3, min(ksize, 31))       # 限制在 3~31 之间
+        dx = cv2.GaussianBlur(dx, (ksize, ksize), self.sigma) * self.alpha
+        dy = cv2.GaussianBlur(dy, (ksize, ksize), self.sigma) * self.alpha
+        # 坐标映射
+        x, y = np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
+        indices = (y + dy).astype(np.float32), (x + dx).astype(np.float32)
+        # cv2.remap 实现变形
+        img_out = cv2.remap(img_np, indices[1], indices[0], cv2.INTER_LINEAR,
+                            borderMode=cv2.BORDER_REPLICATE)
+        from PIL import Image
+        return Image.fromarray(img_out.astype(np.uint8) if img_np.dtype == np.uint8
+                               else np.clip(img_out, 0, 255).astype(np.uint8))
+
+
 class TextLineDataset(Dataset):
     """手写文本行数据集"""
 
@@ -29,16 +64,23 @@ class TextLineDataset(Dataset):
         self.idx2char = {i + 1: ch for i, ch in enumerate(alphabet)}
         self.idx2char[0] = ''  # blank对应空字符串
 
-        # 训练数据增强（torchvision transforms）
+        # 训练数据增强（增强策略加强，提升模型鲁棒性）
         if self.is_train:
             self.augmentation = transforms.Compose([
                 transforms.ToPILImage(),
-                transforms.Grayscale(num_output_channels=3),   # L→RGB 兼容后续操作
-                transforms.RandomAdjustSharpness(2, p=0.3),    # 锐化
-                transforms.ColorJitter(brightness=0.3, contrast=0.3),  # 亮度/对比度
-                transforms.RandomAffine(degrees=3, shear=5),    # 微旋转/倾斜
+                transforms.Grayscale(num_output_channels=3),    # L→RGB 兼容后续操作
+                transforms.RandomAdjustSharpness(2, p=0.3),     # 锐化
+                transforms.ColorJitter(brightness=0.35, contrast=0.35),  # 亮度/对比度（加强）
+                transforms.RandomAffine(degrees=5, shear=8,      # 旋转±5° + 倾斜±8°（加强）
+                                        scale=(0.9, 1.1)),       # 缩放±10%
+                ElasticDistortion(alpha=12.0, sigma=2.5, p=0.4), # 弹性变形（新增）
+                transforms.GaussianBlur(kernel_size=(3, 3),      # 高斯模糊（新增）
+                                        sigma=(0.1, 1.5)),
+                transforms.RandomPerspective(distortion_scale=0.12, p=0.3),  # 透视变换（新增）
                 transforms.ToTensor(),
-                transforms.Lambda(lambda x: x.mean(0, keepdim=True)),  # RGB→灰度
+                transforms.RandomErasing(p=0.1, scale=(0.02, 0.1),  # 随机擦除（新增）
+                                        ratio=(0.3, 3.3)),
+                # 不转灰度，保持3通道伪RGB（ResNet34预训练权重需要3通道输入）
             ])
         else:
             self.augmentation = None
@@ -94,9 +136,10 @@ class TextLineDataset(Dataset):
 
         # 数据增强（仅训练时）
         if self.augmentation is not None:
-            img_tensor = self.augmentation(img)  # (1, H, W)
+            img_tensor = self.augmentation(img)  # (3, H, W) 伪RGB
         else:
-            img_tensor = torch.from_numpy(img_norm).unsqueeze(0)
+            # 灰度图复制为3通道伪RGB（适配ResNet34预训练权重）
+            img_tensor = torch.from_numpy(img_norm).unsqueeze(0).repeat(3, 1, 1)
 
         label_tensor = self.encode_text(text)
         return img_tensor, label_tensor

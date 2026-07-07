@@ -1,6 +1,6 @@
 """
-HuggingFace Spaces 手写英文识别 Demo
-基于 CRNN + CTC，IAM 数据集训练
+HandwritingOCR — 手写英文识别 Gradio Demo
+基于 CRNN (ResNet34 + 3层BiLSTM + CTC)，IAM 数据集训练
 """
 import os
 import numpy as np
@@ -54,9 +54,10 @@ def recognize(image):
     new_w = max(int(w * scale), 1)
     img = cv2.resize(img, (new_w, img_height))
 
-    # 归一化
+    # 归一化 + 转为3通道伪RGB（适配 ResNet34 预训练权重）
     img = img.astype(np.float32) / 255.0
-    tensor = torch.from_numpy(img).unsqueeze(0).unsqueeze(0)
+    tensor = torch.from_numpy(img).unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
+    tensor = tensor.repeat(1, 3, 1, 1)  # (1, 3, H, W) 灰度复制3份
 
     # 推理
     with torch.no_grad():
@@ -67,58 +68,58 @@ def recognize(image):
     max_probs, _ = probs.max(dim=-1)
     confidence = max_probs.mean().item()
 
-    # 解码
-    pred_texts = decode_predictions(log_probs, idx2char)
+    # Beam Search 解码（更准确）
+    pred_texts = decode_predictions(log_probs, idx2char, use_beam=True, beam_width=5)
     text = pred_texts[0]
 
-    # OCR 常见后处理修正
+    # OCR 后处理修正
     text = text.replace("''", '"').replace("  ", " ")
 
     return text, f"{confidence:.2%}"
 
 
-# 示例图片（训练集里的 IAM 真实手写样本）
+# 示例图片
 examples = [
     ["examples/sample1.png"] if os.path.exists("examples/sample1.png") else None,
 ]
 
 demo = gr.Interface(
     fn=recognize,
-    inputs=gr.Image(type="numpy", label="上传手写英文图片"),
+    inputs=gr.Image(type="numpy", label="Upload handwritten English image"),
     outputs=[
-        gr.Textbox(label="识别结果", placeholder="等待识别..."),
-        gr.Textbox(label="置信度"),
+        gr.Textbox(label="Recognition Result", placeholder="Waiting..."),
+        gr.Textbox(label="Confidence"),
     ],
-    title="📝 HandwritingOCR — 手写英文识别",
+    title="HandwritingOCR — Handwritten English Recognition",
     description="""
-基于 **CRNN (CNN + BiLSTM + CTC)** 架构，使用 **IAM 真实手写数据集** 训练。
+**CRNN (ResNet34 + 3-layer BiLSTM + CTC)** architecture, trained on **IAM Handwriting Database**.
 
-- 支持手写英文行识别
-- 模型: Custom CNN + 2层 BiLSTM + CTC Loss
-- 训练数据: IAM Handwriting Database (6,482 张)
-- 验证准确率: **68.2%**
-- 置信度越高越可靠
+- Handwritten English text line recognition
+- Model: ResNet34 + 3-layer BiLSTM (hidden=512) + CTC Loss
+- Training data: IAM Handwriting Database (7,154 train + 1,789 val)
+- Validation accuracy: **89.9%** (CER-based)
+- Beam Search decoding for best accuracy
 
-📌 上传手写英文图片，点击 Submit 即可识别。
-📌 支持直接拍照上传、拖拽图片到框内。
+Upload a handwritten English image and click Submit to recognize.
     """,
     article="""
-### 技术架构
+### Architecture
 ```
-输入图片 → 灰度化 → 缩放(64px高) → CRNN Model → CTC贪心解码 → 输出文字
+Input Image → Grayscale → Resize(128px) → ResNet34 → 3-layer BiLSTM → CTC Beam Search → Output Text
 ```
 
-### 模型信息
-| 指标 | 数值 |
-|------|------|
-| Backbone | Custom CNN (7层) |
-| RNN | 2层 BiLSTM (hidden=256) |
-| 参数量 | 8.5M |
-| 训练轮数 | 30 epochs |
-| 验证准确率 | 68.2% |
-| 数据集 | IAM Handwriting Database |
+### Model Info
+| Metric | Value |
+|--------|-------|
+| Backbone | ResNet34 (ImageNet pretrained) |
+| RNN | 3-layer BiLSTM (hidden=512) |
+| Parameters | ~46M |
+| Epochs | 50 |
+| Batch Size | 16 |
+| Validation Acc | **89.9%** |
+| Dataset | IAM Handwriting Database |
 
-🔗 [GitHub](https://github.com/your-username/HandwritingOCR)
+[GitHub](https://github.com/2shu2/HandwritingOCR)
     """,
     examples=examples if examples[0] else None,
     theme="soft",
