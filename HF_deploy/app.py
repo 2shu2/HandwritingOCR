@@ -96,8 +96,8 @@ demo = gr.Interface(
 
 - Handwritten English text line recognition
 - Model: ResNet34 + 3-layer BiLSTM (hidden=512) + CTC Loss
-- Training data: IAM Handwriting Database (7,154 train + 1,789 val)
-- Validation accuracy: **89.9%** (CER-based)
+- Training data: IAM (7,154) + TRDG synthetic (10,000) = 17,154 images
+- Validation accuracy: **86.0%** on IAM test set (also handles neat handwriting)
 - Beam Search decoding for best accuracy
 
 Upload a handwritten English image and click Submit to recognize.
@@ -116,8 +116,8 @@ Input Image → Grayscale → Resize(128px) → ResNet34 → 3-layer BiLSTM → 
 | Parameters | ~46M |
 | Epochs | 50 |
 | Batch Size | 16 |
-| Validation Acc | **89.9%** |
-| Dataset | IAM Handwriting Database |
+| Validation Acc | **86.0%** (IAM) + neat handwriting |
+| Dataset | IAM + TRDG synthetic (17K total) |
 
 [GitHub](https://github.com/2shu2/HandwritingOCR)
     """,
