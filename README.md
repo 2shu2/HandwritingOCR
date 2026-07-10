@@ -2,7 +2,7 @@
 
 基于 **CRNN (ResNet34 + 3层BiLSTM + CTC)** 的端到端手写英文文字行识别系统。使用 **IAM 真实手写数据集** 训练，支持本地推理、Web API、在线 Demo。
 
->  **验证准确率: 89.9%**（CER 评估，Beam Search 解码约 91%）
+>  **验证准确率: 89.9%**（纯 IAM）| **86.0%**（IAM+TRDG 混合，覆盖工整手写）
 
 > 🚀 **[在线体验](https://www.modelscope.cn/studios/nihao523/HandwritingOCR)** — ModelScope 一键部署，上传图片即识别
 
@@ -113,9 +113,9 @@ uvicorn app:app --host 0.0.0.0 --port 8000
 | Batch Size | 16 |
 | 输入高度 | 128px (3通道伪RGB) |
 | 混合精度 | FP16 (AMP) |
-| 验证准确率 | **89.9%** (贪心解码) |
-| Beam Search | **~91%** (5-beam) |
-| 数据集 | IAM Handwriting Database |
+| 验证准确率 | **89.9%** (纯IAM) / **86.0%** (IAM+TRDG混合) |
+| Beam Search | **~91%** (5-beam, 纯IAM) |
+| 数据集 | IAM (7,154) + TRDG合成 (10,000) = 17,154 |
 
 ## 准确率提升历程
 
