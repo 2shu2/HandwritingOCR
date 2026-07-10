@@ -26,3 +26,5 @@ HF_deploy.zip
 # 系统文件
 .DS_Store
 Thumbs.db
+torch-*.whl
+training_pack.zip

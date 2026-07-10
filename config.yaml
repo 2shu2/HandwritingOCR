@@ -1,6 +1,6 @@
 data:
-  train_image_dir: "data/all_dataset/images"
-  train_label_file: "data/all_dataset/train_labels.txt"
+  train_image_dir: "data/large_dataset/images"
+  train_label_file: "data/large_dataset/merged_train.txt"
   val_image_dir: "data/all_dataset/images"
   val_label_file: "data/all_dataset/val_labels.txt"
   alphabet: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,!?;:-\"'/() "

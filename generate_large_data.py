@@ -214,7 +214,7 @@ def generate_data(num_samples, fonts):
             img_name = f"synth_{i:06d}.png"
             img.save(os.path.join(OUTPUT_DIR, img_name))
             f.write(f"{img_name}\t{text}\n")
-            if (i + 1) % 5000 == 0:
+            if (i + 1) % 500 == 0:
                 print(f"  Generated {i + 1}/{num_samples} images ({(i+1)*100//num_samples}%)")
 
     print(f"\nDone! {num_samples} images → {OUTPUT_DIR}")
